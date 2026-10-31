@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# tlp-fan-toggle.sh
+# Toggles fan-friendly settings on AC power by modifying /etc/tlp.conf
+# Run with: sudo ./tlp-fan-toggle.sh [on|off]
+
+set -euo pipefail
+
+TLP_CONF="/etc/tlp.conf"
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+usage() {
+    echo "Usage: sudo $0 [on|off]"
+    echo ""
+    echo "  on   – Enable fan / allow higher performance on AC"
+    echo "         (CPU policy → balance_performance, platform → performance,"
+    echo "          CPU boost on, HWP dynamic boost on)"
+    echo "  off  – Suppress fan / reduce power on AC"
+    echo "         (CPU policy → balance_power, platform → balanced,"
+    echo "          CPU boost off, HWP dynamic boost off)"
+    exit 1
+}
+
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo "Error: this script must be run as root (use sudo)." >&2
+        exit 1
+    fi
+}
+
+check_tlp_conf() {
+    if [[ ! -f "$TLP_CONF" ]]; then
+        echo "Error: $TLP_CONF not found. Is TLP installed?" >&2
+        exit 1
+    fi
+}
+
+# Replace or append a key=value pair in tlp.conf
+set_param() {
+    local key="$1"
+    local value="$2"
+
+    if grep -qE "^#?[[:space:]]*${key}=" "$TLP_CONF"; then
+        # Key exists (commented or not) – replace the line
+        sed -i -E "s|^#?[[:space:]]*${key}=.*|${key}=${value}|" "$TLP_CONF"
+    else
+        # Key missing entirely – append it
+        echo "${key}=${value}" >> "$TLP_CONF"
+    fi
+}
+
+backup_conf() {
+    local backup="${TLP_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$TLP_CONF" "$backup"
+    echo "Backup saved to: $backup"
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+[[ $# -ne 1 ]] && usage
+check_root
+check_tlp_conf
+
+MODE="${1,,}"   # lowercase
+
+backup_conf
+
+case "$MODE" in
+
+    on)
+        echo "==> Fan ON / performance mode on AC"
+
+        # CPU energy/performance policy
+        set_param "CPU_ENERGY_PERF_POLICY_ON_AC"  "balance_performance"
+        set_param "CPU_ENERGY_PERF_POLICY_ON_BAT" "power"
+        set_param "CPU_ENERGY_PERF_POLICY_ON_SAV" "power"
+
+        # Platform profile
+        set_param "PLATFORM_PROFILE_ON_AC"  "performance"
+        set_param "PLATFORM_PROFILE_ON_BAT" "low-power"
+        set_param "PLATFORM_PROFILE_ON_SAV" "low-power"
+
+        # CPU turbo boost
+        set_param "CPU_BOOST_ON_AC"  "1"
+        set_param "CPU_BOOST_ON_BAT" "0"
+        set_param "CPU_BOOST_ON_SAV" "0"
+
+        # HWP dynamic boost
+        set_param "CPU_HWP_DYN_BOOST_ON_AC"  "1"
+        set_param "CPU_HWP_DYN_BOOST_ON_BAT" "0"
+        set_param "CPU_HWP_DYN_BOOST_ON_SAV" "0"
+
+        echo "Done. Fan / performance settings applied for AC."
+        ;;
+
+    off)
+        echo "==> Fan OFF / quiet mode on AC"
+
+        # CPU energy/performance policy
+        set_param "CPU_ENERGY_PERF_POLICY_ON_AC"  "balance_power"
+        set_param "CPU_ENERGY_PERF_POLICY_ON_BAT" "power"
+        set_param "CPU_ENERGY_PERF_POLICY_ON_SAV" "power"
+
+        # Platform profile
+        set_param "PLATFORM_PROFILE_ON_AC"  "balanced"
+        set_param "PLATFORM_PROFILE_ON_BAT" "low-power"
+        set_param "PLATFORM_PROFILE_ON_SAV" "low-power"
+
+        # CPU turbo boost
+        set_param "CPU_BOOST_ON_AC"  "0"
+        set_param "CPU_BOOST_ON_BAT" "0"
+        set_param "CPU_BOOST_ON_SAV" "0"
+
+        # HWP dynamic boost
+        set_param "CPU_HWP_DYN_BOOST_ON_AC"  "0"
+        set_param "CPU_HWP_DYN_BOOST_ON_BAT" "0"
+        set_param "CPU_HWP_DYN_BOOST_ON_SAV" "0"
+
+        echo "Done. Quiet / low-power settings applied for AC."
+        ;;
+
+    *)
+        usage
+        ;;
+esac
+
+# Reload TLP so changes take effect immediately
+if command -v tlp &>/dev/null; then
+    echo "==> Reloading TLP..."
+    tlp start
+    echo "TLP reloaded."
+else
+    echo "Warning: 'tlp' command not found. Restart TLP manually to apply changes."
+fi
